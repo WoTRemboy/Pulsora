@@ -12,6 +12,12 @@ public class Tile : MonoBehaviour
     private Image background;
     private TextMeshProUGUI text;
 
+    // Prevent concurrent animations that can leave the tile at a wrong scale
+    private Coroutine moveRoutine;
+    private Coroutine scaleRoutine;
+
+    private static readonly Vector3 kOne = Vector3.one;
+
     private void Awake()
     {
         background = GetComponent<Image>();
@@ -21,7 +27,6 @@ public class Tile : MonoBehaviour
     public void SetState(TileState state)
     {
         this.state = state;
-
         background.color = state.backgroundColor;
         text.color = state.textColor;
         text.text = state.number.ToString();
@@ -29,31 +34,70 @@ public class Tile : MonoBehaviour
 
     public void Spawn(TileCell cell)
     {
-        if (this.cell != null) {
-            this.cell.tile = null;
-        }
+        if (this.cell != null) this.cell.tile = null;
 
         this.cell = cell;
         this.cell.tile = this;
 
+        // Stop any running animations before starting a new one
+        StopMoveRoutine();
+        StopScaleRoutine();
+
         transform.position = cell.transform.position;
         transform.localScale = Vector3.zero;
+        scaleRoutine = StartCoroutine(SpawnAnimation());
+    }
 
-        StartCoroutine(SpawnAnimation());
+    public void MoveTo(TileCell cell)
+    {
+        if (this.cell != null) this.cell.tile = null;
+
+        this.cell = cell;
+        this.cell.tile = this;
+
+        StopMoveRoutine();
+        moveRoutine = StartCoroutine(AnimateMove(cell.transform.position, false));
+    }
+
+    public void Merge(TileCell cell)
+    {
+        if (this.cell != null) this.cell.tile = null;
+
+        this.cell = null;
+        cell.tile.locked = true;
+
+        StopMoveRoutine();
+        moveRoutine = StartCoroutine(AnimateMove(cell.transform.position, true));
+    }
+
+    public void PlayMergeAnimation()
+    {
+        // Ensure only one scale animation runs at a time
+        StopScaleRoutine();
+        scaleRoutine = StartCoroutine(MergePulse());
+    }
+
+    private void StopMoveRoutine()
+    {
+        if (moveRoutine != null) { StopCoroutine(moveRoutine); moveRoutine = null; }
+    }
+
+    private void StopScaleRoutine()
+    {
+        if (scaleRoutine != null) { StopCoroutine(scaleRoutine); scaleRoutine = null; }
     }
 
     private IEnumerator SpawnAnimation()
     {
         const float upTime = 0.15f;
-        const float downTime = 0.1f;
-        Vector3 original = Vector3.one;
-        Vector3 overshoot = original * 1.2f;
+        const float downTime = 0.10f;
+
+        Vector3 overshoot = kOne * 1.2f;
 
         float t = 0f;
         while (t < upTime)
         {
-            float f = t / upTime;
-            transform.localScale = Vector3.Lerp(Vector3.zero, overshoot, f);
+            transform.localScale = Vector3.Lerp(Vector3.zero, overshoot, t / upTime);
             t += Time.deltaTime;
             yield return null;
         }
@@ -61,55 +105,29 @@ public class Tile : MonoBehaviour
         t = 0f;
         while (t < downTime)
         {
-            float f = t / downTime;
-            transform.localScale = Vector3.Lerp(overshoot, original, f);
+            transform.localScale = Vector3.Lerp(overshoot, kOne, t / downTime);
             t += Time.deltaTime;
             yield return null;
         }
 
-        transform.localScale = original;
-    }
-
-    public void MoveTo(TileCell cell)
-    {
-        if (this.cell != null) {
-            this.cell.tile = null;
-        }
-
-        this.cell = cell;
-        this.cell.tile = this;
-
-        StartCoroutine(Animate(cell.transform.position, false));
-    }
-
-    public void Merge(TileCell cell)
-    {
-        if (this.cell != null) {
-            this.cell.tile = null;
-        }
-
-        this.cell = null;
-        cell.tile.locked = true;
-
-        StartCoroutine(Animate(cell.transform.position, true));
-    }
-
-    public void PlayMergeAnimation()
-    {
-        StartCoroutine(MergePulse());
+        // Snap to the canonical size to avoid drift
+        transform.localScale = kOne;
+        scaleRoutine = null;
     }
 
     private IEnumerator MergePulse()
     {
         float duration = 0.15f;
-        Vector3 original = transform.localScale;
-        Vector3 peak = original * 1.2f;
+
+        // Use the current value only for the upward leg, but always end at 1
+        Vector3 start = transform.localScale;
+        Vector3 peak = kOne * 1.2f;
 
         // Scale up
         float t = 0f;
         while (t < duration)
         {
-            transform.localScale = Vector3.Lerp(original, peak, t / duration);
+            transform.localScale = Vector3.Lerp(start, peak, t / duration);
             t += Time.deltaTime;
             yield return null;
         }
@@ -118,18 +136,19 @@ public class Tile : MonoBehaviour
         t = 0f;
         while (t < duration)
         {
-            transform.localScale = Vector3.Lerp(peak, original, t / duration);
+            transform.localScale = Vector3.Lerp(peak, kOne, t / duration);
             t += Time.deltaTime;
             yield return null;
         }
 
-        transform.localScale = original;
+        transform.localScale = kOne; // normalize size
+        scaleRoutine = null;
     }
 
-    private IEnumerator Animate(Vector3 to, bool merging)
+    private IEnumerator AnimateMove(Vector3 to, bool merging)
     {
         float elapsed = 0f;
-        float duration = 0.1f;
+        const float duration = 0.10f;
 
         Vector3 from = transform.position;
 
@@ -142,9 +161,13 @@ public class Tile : MonoBehaviour
 
         transform.position = to;
 
-        if (merging) {
+        if (merging)
+        {
+            // Ensure no scale animation is touching this object before destroying
+            StopScaleRoutine();
             Destroy(gameObject);
         }
-    }
 
+        moveRoutine = null;
+    }
 }
